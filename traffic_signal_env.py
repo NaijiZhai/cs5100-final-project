@@ -8,10 +8,10 @@ class TrafficSignalEnv(gym.Env):
     def __init__(
         self,
         max_steps=1000,
-        arrival_prob=(0.3, 0.3, 0.3, 0.3),
+        arrival_prob=(0.6, 0.6, 0.6, 0.6),
         depart_capacity=2,
-        min_green_steps=3,
-        max_queue=50,
+        min_green_steps=4,
+        max_queue=100,
         max_wait=500,
     ):
         super().__init__()
