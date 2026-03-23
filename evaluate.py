@@ -1,77 +1,72 @@
+import os
+
 import numpy as np
+import torch
 
-import traffic_dqn
-from baseline import FixedTimePolicy, RandomPolicy, DQNPolicy
+from agent import Agent
 from traffic_signal_env import TrafficSignalEnv
-
-EVAL_EPISODES = 50
-EVAL_STEPS = 1000
-FIXED_SWITCH_INTERVAL = 10
+from baseline import FixedTimePolicy, RandomPolicy, DQNPolicy
 
 
-def evaluate_policy(policy, env, n_episodes=EVAL_EPISODES, n_steps=EVAL_STEPS):
-    episode_stats = []
+def evaluate_policy(policy, env, n_episodes=50, n_steps=1000):
+    rewards = []
+    total_departed_list = []
+    total_queue_list = []
+    total_wait_list = []
+    switch_count_list = []
 
-    for episode_idx in range(n_episodes):
-        obs, _ = env.reset()
+    for episode in range(n_episodes):
+        obs, info = env.reset()
         policy.reset()
 
         episode_reward = 0.0
-        final_info = None
+        last_info = {}
 
-        for _ in range(n_steps):
+        for step in range(n_steps):
             action = policy.act(obs)
             obs, reward, done, trunc, info = env.step(action)
 
             episode_reward += reward
-            final_info = info
+            last_info = info
 
             if done or trunc:
                 break
 
-        episode_stats.append(
-            {
-                'reward': episode_reward,
-                'departed': final_info['total_departed'],
-                'final_queue': final_info['total_queue'],
-                'final_wait': final_info['total_wait'],
-                'switch_count': final_info['switch_count'],
-            }
-        )
-
-    rewards = [item['reward'] for item in episode_stats]
-    departed = [item['departed'] for item in episode_stats]
-    final_queue = [item['final_queue'] for item in episode_stats]
-    final_wait = [item['final_wait'] for item in episode_stats]
-    switch_count = [item['switch_count'] for item in episode_stats]
+        rewards.append(episode_reward)
+        total_departed_list.append(last_info.get("total_departed", 0))
+        total_queue_list.append(last_info.get("total_queue", 0))
+        total_wait_list.append(last_info.get("total_wait", 0))
+        switch_count_list.append(last_info.get("switch_count", 0))
 
     return {
-        'avg_reward': float(np.mean(rewards)),
-        'avg_departed': float(np.mean(departed)),
-        'avg_final_queue': float(np.mean(final_queue)),
-        'avg_final_wait': float(np.mean(final_wait)),
-        'avg_switch_count': float(np.mean(switch_count)),
+        "avg_reward": float(np.mean(rewards)),
+        "std_reward": float(np.std(rewards)),
+        "avg_departed": float(np.mean(total_departed_list)),
+        "avg_final_queue": float(np.mean(total_queue_list)),
+        "avg_final_wait": float(np.mean(total_wait_list)),
+        "avg_switch_count": float(np.mean(switch_count_list)),
     }
-
-
-def main():
-    env = TrafficSignalEnv(max_steps=EVAL_STEPS)
-    dqn_model = traffic_dqn.main()
-
-    policies = {
-        'fixed': FixedTimePolicy(switch_interval=FIXED_SWITCH_INTERVAL),
-        'random': RandomPolicy(env.action_space),
-        'dqn': DQNPolicy(dqn_model),
-    }
-    results = {}
-    for name, policy in policies.items():
-        results[name] = evaluate_policy(policy, env)
-        print(
-            f'{name}' f'reward={results[name]["avg_reward"]:.2f} ' f'departed={results[name]["avg_departed"]:.2f}'
-            f'queue={results[name]["avg_final_queue"]:.2f}' f'wait={results[name]["avg_final_wait"]:.2f}'
-            f'switch={results[name]["avg_switch_count"]:.2f}'
-        )
 
 
 if __name__ == "__main__":
-    main()
+    env = TrafficSignalEnv(max_steps=1000)
+
+    model_path = "dqn_model.pth"
+    if not os.path.exists(model_path):
+        print(f"No saved model found at {model_path}. Train first with: python traffic_dqn.py")
+        exit(1)
+
+    agent = Agent(env.observation_space.shape[0], env.action_space.n)
+    agent.online_network.load_state_dict(torch.load(model_path, weights_only=True))
+
+    dqn_policy = DQNPolicy(agent)
+    fixed_policy = FixedTimePolicy(switch_interval=10)
+    random_policy = RandomPolicy(env.action_space)
+
+    fixed_result = evaluate_policy(fixed_policy, env, n_episodes=50, n_steps=1000)
+    random_result = evaluate_policy(random_policy, env, n_episodes=50, n_steps=1000)
+    dqn_result = evaluate_policy(dqn_policy, env, n_episodes=50, n_steps=1000)
+
+    print("Fixed-Time Policy:", fixed_result)
+    print("Random Policy:", random_result)
+    print("DQN Policy:", dqn_result)

@@ -76,11 +76,15 @@ def main():
         if episode % UPDATE_FREQUENCY == 0:
             agent.target_network.load_state_dict(agent.online_network.state_dict())
             print(
-                f'Episode {episode}: '                f'steps={steps_this_episode}, '
-                f'env_step_count={env.step_count}, '
-                f'Reward={episode_reward:.2f}, '
-                f'Epsilon={epsilon:.3f}, '
-                f'Departed={info["total_departed"]}'
+                f"Episode {episode}: "
+                f"steps={steps_this_episode}, "
+                f"env_step_count={env.step_count}, "
+                f"Reward={episode_reward:.2f}, "
+                f"Epsilon={epsilon:.3f}, "
+                f"Departed={info.get('total_departed', 0)}"
             )
-    return agent
+    save_path = "dqn_model.pth"
+    torch.save(agent.online_network.state_dict(), save_path)
+    print(f"Model saved to {save_path}")
 
+    return agent
