@@ -77,6 +77,8 @@ Main steps:
 - sample batches and train the online network
 - periodically update the target network
 - print training statistics such as reward and throughput
+- save per-episode metrics to `training_metrics.csv`
+- save the trained model weights to `dqn_model.pth`
 
 This file is basically the **training entry point**.
 
@@ -98,8 +100,24 @@ The purpose of this file is to provide **simple reference strategies** for compa
 
 ---
 
+### `plot_training.py`
+This file generates **training curve visualizations** from the CSV metrics.
+
+It produces 4 plots:
+
+- Episode reward (raw + smoothed)
+- Exploration rate (epsilon decay)
+- Queue length at episode end
+- Throughput (departed vehicles)
+
+The output is saved as `training_curves.png`.
+
+---
+
 ### `evaluate.py`
 This file is used to **evaluate different policies**.
+
+It loads the trained model from `dqn_model.pth` (no retraining needed).
 
 It compares:
 
@@ -236,6 +254,17 @@ So the agent is encouraged to:
 python traffic_dqn.py
 ```
 
+This will produce:
+- `dqn_model.pth` — trained model weights
+- `training_metrics.csv` — per-episode metrics
+
+### Plot training curves
+
+```shell script
+python plot_training.py
+```
+
+This reads `training_metrics.csv` and saves `training_curves.png`.
 
 ### Evaluate different policies
 
@@ -243,21 +272,24 @@ python traffic_dqn.py
 python evaluate.py
 ```
 
+This loads the trained model from `dqn_model.pth` and compares it against the baselines.  
+You must train first before evaluating.
+
 
 ---
 
 ## Current Scope
 
-This project is currently a **basic DQN traffic signal control framework**.  
-The main focus is:
+This project is a **DQN traffic signal control framework** with:
 
-- a working environment
-- a complete DQN training pipeline
-- comparison against simple baselines
+- a working Gymnasium environment
+- a complete DQN training pipeline with model persistence
+- training metrics logging and visualization
+- comparison against simple baselines (fixed-time, random)
 
 Possible future improvements include:
 
-- reward design
+- reward design (e.g. squared delay for fairness)
 - richer state features
 - better network architecture
 - hyperparameter tuning
