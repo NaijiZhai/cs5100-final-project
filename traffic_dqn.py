@@ -1,3 +1,4 @@
+import csv
 import random
 
 import numpy as np
@@ -23,6 +24,11 @@ def main():
     agent = Agent(env.observation_space.shape[0], env.action_space.n)
 
     global_step = 0
+
+    log_path = "training_metrics.csv"
+    log_file = open(log_path, "w", newline="")
+    writer = csv.writer(log_file)
+    writer.writerow(["episode", "reward", "epsilon", "departed", "total_queue", "total_wait", "switch_count"])
 
     for episode in range(n_episode):
         s, info = env.reset()
@@ -73,6 +79,16 @@ def main():
 
         reward_buffer[episode] = episode_reward
 
+        writer.writerow([
+            episode,
+            f"{episode_reward:.2f}",
+            f"{epsilon:.4f}",
+            info.get("total_departed", 0),
+            info.get("total_queue", 0),
+            info.get("total_wait", 0),
+            info.get("switch_count", 0),
+        ])
+
         if episode % UPDATE_FREQUENCY == 0:
             agent.target_network.load_state_dict(agent.online_network.state_dict())
             print(
@@ -83,8 +99,15 @@ def main():
                 f"Epsilon={epsilon:.3f}, "
                 f"Departed={info.get('total_departed', 0)}"
             )
+    log_file.close()
+    print(f"Training metrics saved to {log_path}")
+
     save_path = "dqn_model.pth"
     torch.save(agent.online_network.state_dict(), save_path)
     print(f"Model saved to {save_path}")
 
     return agent
+
+
+if __name__ == "__main__":
+    main()
