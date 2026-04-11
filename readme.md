@@ -1,299 +1,235 @@
 # Traffic Signal Control Project
 
-This is a simple traffic signal control project based on **DQN (Deep Q-Network)**.  
-The goal is to train an agent to switch traffic light phases in order to reduce vehicle queues and waiting time.
+Single-intersection traffic signal control with **DQN**, redesigned to follow a paper-like control structure:
 
-The main DQN implementation is based on the core idea from:
-
-> **Playing Atari with Deep Reinforcement Learning**  
-> <https://arxiv.org/pdf/1312.5602>
-
-In other words, the code follows the standard DQN pipeline, including:
-
-- experience replay
-- target network
-- epsilon-greedy exploration
-- neural network approximation of Q-values
-
----
+- fixed 4-phase cycle with safety phases
+- action adjusts cycle timing (not instant phase switching)
+- decision every full signal cycle
+- history-aware observation
+- comparison against fixed-time baseline
 
 ## Project Modules
 
 ### `traffic_signal_env.py`
-This file defines the **traffic signal environment**.
+Gymnasium environment for a single intersection.
 
-Main responsibilities:
+Key design:
 
-- define the observation space
-- define the action space
-- simulate vehicle arrivals and departures
-- compute rewards
-- return step statistics
-
-You can think of this file as the **environment that the agent interacts with during training and evaluation**.
-
----
+- **4 phases**: `NS green -> NS yellow -> EW green -> EW yellow`
+- **3 actions**:
+  - `0`: favor NS (increase NS green, decrease EW green)
+  - `1`: keep base cycle
+  - `2`: favor EW (decrease NS green, increase EW green)
+- **cycle-level stepping**: one `env.step(action)` applies one action to one full 4-phase cycle
+- **history-aware state**: current queue/wait + recent arrival/departure windows + phase info + last actions
+- **reward components**:
+  - waiting time penalty
+  - queue penalty
+  - NS/EW imbalance penalty
+  - throughput reward
+  - action-change penalty
 
 ### `agent.py`
-This file contains the main DQN-related components.
+DQN components:
 
-#### `Memotable`
-This is the replay buffer. It stores transitions of the form:
-
-- current state `s`
-- action `a`
-- reward `r`
-- terminal flag `done`
-- truncation flag `trunc`
-- next state `s_new`
-
-During training, batches are randomly sampled from this buffer.
-
-#### `DQN`
-This is the Q-network, implemented as a simple MLP.  
-It takes the environment state as input and outputs Q-values for all actions.
-
-#### `Agent`
-This class groups together:
-
-- the online network
-- the target network
-- the replay buffer
-- the optimizer
-- other training-related hyperparameters
-
----
+- replay buffer (`ReplayBuffer`, backward alias `Memotable`)
+- Q-network (`DQN`)
+- agent wrapper (`Agent`)
 
 ### `traffic_dqn.py`
-This is the **main training script** for DQN.
+Training entry:
 
-Main steps:
-
-- create the environment
-- create the agent
-- interact with the environment in each episode
-- choose actions with epsilon-greedy
-- store transitions in the replay buffer
-- sample batches and train the online network
-- periodically update the target network
-- print training statistics such as reward and throughput
-- save per-episode metrics to `training_metrics.csv`
-- save the trained model weights to `dqn_model.pth`
-
-This file is basically the **training entry point**.
-
----
+- builds paper-like env config
+- epsilon-greedy data collection
+- replay sampling + target network update
+- saves training logs to `training_metrics.csv`
+- saves model to `dqn_model.pth` and `dqn_checkpoint.pth`
 
 ### `baseline.py`
-This file defines several baseline policies for comparison.
+Evaluation policies:
 
-#### `FixedTimePolicy`
-Switches the traffic light every fixed number of steps.
-
-#### `RandomPolicy`
-Chooses actions randomly.
-
-#### `DQNPolicy`
-Wraps a trained DQN agent into a policy interface so it can be evaluated in the same way as the baselines.
-
-The purpose of this file is to provide **simple reference strategies** for comparison.
-
----
-
-### `plot_training.py`
-This file generates **training curve visualizations** from the CSV metrics.
-
-It produces 4 plots:
-
-- Episode reward (raw + smoothed)
-- Exploration rate (epsilon decay)
-- Queue length at episode end
-- Throughput (departed vehicles)
-
-The output is saved as `training_curves.png`.
-
----
+- `FixedTimePolicy`: fixed static action (default keep / action `1`)
+- `DemandAwareFixedTimePolicy`: fixed action chosen from demand (`arrival_prob`)
+- `StaticActionPolicy`: fixed action baseline (`0`, `1`, or `2`)
+- `RandomPolicy`: random action
+- `QueueBasedPolicy`: favor NS/EW by queue imbalance with deadband
+- `DQNPolicy`: wraps trained DQN model
 
 ### `evaluate.py`
-This file is used to **evaluate different policies**.
+Runs policy comparison over multiple episodes and reports averages:
 
-It loads the trained model from `dqn_model.pth` (no retraining needed).
+- reward / queue / wait / imbalance
+- throughput (`avg_departed`, `avg_departed_per_sec`)
+- switch count (`avg_switch_count`)
+- final queue / final wait (`avg_final_queue`, `avg_final_wait`)
 
-It compares:
+Also supports loading either:
 
-- Fixed-Time Policy
-- Random Policy
-- DQN Policy
+- plain `state_dict` (`dqn_model.pth`)
+- metadata checkpoint (`dqn_checkpoint.pth`) with env/agent config
 
-It reports metrics such as:
+### `run_ablations.py`
+Runs reproducible ablation sets:
 
-- average reward
-- average departed vehicles
-- average final queue length
-- average final waiting time
-- average switch count
+- training duration (`600` vs `1800` episodes)
+- model size (`hidden_dim 64` vs `128`)
+- traffic difficulty (symmetric vs asymmetric peaky demand)
 
-This file is mainly for experiment comparison.
+Outputs are saved under `results/ablations/...` with per-run `evaluation.json` and aggregated `summary.csv`.
+The summary reports gains against multiple fixed-time baselines, including tuned static fixed-time (`reward_gain_vs_tuned`, `wait_reduction_vs_tuned`).
 
----
+### `plot_training.py`
+Plots training curves from `training_metrics.csv`.
 
-## DQN Workflow
+Current default plots include:
 
-The DQN implementation follows the basic procedure from  
-**Playing Atari with Deep Reinforcement Learning**.
+- episode reward
+- epsilon
+- average queue
+- average wait
+- average imbalance
+- throughput rate (`avg_departed_per_sec`, fallback to `total_departed`)
 
+## Environment Interface
 
-## Environment Parameters
+### Action Space
+`Discrete(3)`:
 
-The `TrafficSignalEnv` currently supports the following main parameters:
+- `0`: favor NS
+- `1`: keep
+- `2`: favor EW
 
-### `max_steps=1000`
-Maximum number of steps in one episode.
+### Observation Space
+Flattened vector:
 
-- the episode is truncated when this limit is reached
-- controls the length of each training/evaluation run
+- 4 queue lengths
+- 4 cumulative waits
+- `K * 4` arrivals history
+- `K * 4` departures history
+- phase id
+- phase remaining ratio
+- last action
+- previous action
 
----
+When `normalize_state=True`, values are clipped/scaled to `[0, 1]`.
 
-### `arrival_prob=(0.3, 0.3, 0.3, 0.3)`
-Arrival probabilities for the four incoming lanes.
+Note:
 
-- there are 4 lanes in total
-- at each step, each lane may receive a new vehicle according to its probability
+- this environment makes decisions at cycle boundaries (end of each full 4-phase cycle)
+- therefore `phase id` and `phase remaining ratio` usually carry limited information (near-constant at decision time)
+- the most informative features are queue/wait values, flow histories, and recent action history
 
-Example:
+### Episode Semantics
 
-```python
-arrival_prob=(0.5, 0.2, 0.5, 0.2)
-```
+- `max_decisions` counts **decision steps**
+- each decision step executes one complete cycle:
+  - `NS green -> NS yellow -> EW green -> EW yellow`
+- total simulated seconds in one episode are the sum of executed cycle durations
+- `control_interval` is retained only for backward compatibility and is not used in cycle-level stepping
 
+## Main Hyperparameters
 
-This means some directions have heavier traffic flow than others.
+`TrafficSignalEnv` useful args:
 
----
-
-### `depart_capacity=2`
-Maximum number of vehicles that can leave each green lane in one step.
-
-- larger values mean higher traffic throughput per step
-- directly affects congestion and flow efficiency
-
----
-
-### `min_green_steps=3`
-Minimum number of steps a phase must stay green before switching is allowed.
-
-- prevents the signal from switching too frequently
-- introduces a simple control constraint
-
----
-
-### `max_queue=50`
-Upper bound used when normalizing queue lengths.
-
-If state normalization is enabled, queue lengths are divided by this value and clipped at `1.0`.
-
----
-
-### `max_wait=500`
-Upper bound used when normalizing waiting times.
-
-If state normalization is enabled, waiting times are divided by this value and clipped at `1.0`.
-
----
-
-### `normalize_state=True`
-Whether to normalize the state.
-
-- `True`: returns normalized state values
-- `False`: returns raw state values
-
-In general, normalized states are more suitable for neural network training.
-
----
-
-## State, Action, and Reward
-
-### State
-The state contains 9 values:
-
-- 4 lane queue lengths
-- 4 lane accumulated waiting times
-- 1 current phase indicator
-
----
-
-### Action
-The action space has 2 discrete actions:
-
-- `0`: north-south green
-- `1`: west-east green
-
----
-
-### Reward
-The current reward is designed to:
-
-- penalize total queue length
-- penalize total waiting time
-- penalize phase switching
-
-So the agent is encouraged to:
-
-- reduce congestion
-- reduce waiting
-- avoid unnecessary switching
-
----
+- `max_decisions` (decision horizon)
+- `base_cycle` (`ns_green`, `ns_yellow`, `ew_green`, `ew_yellow`)
+- `green_delta` (timing adjustment magnitude)
+- `min_green`
+- `history_windows`
+- `arrival_prob`, `demand_variation`, `demand_period`
+- reward weights:
+  - `reward_wait_weight`
+  - `reward_queue_weight`
+  - `reward_imbalance_weight`
+  - `reward_throughput_weight`
+  - `reward_switch_weight`
 
 ## How to Run
 
-### Train the DQN agent
+### 1) Train
 
-```shell script
+```bash
 python traffic_dqn.py
 ```
 
-This will produce:
-- `dqn_model.pth` — trained model weights
-- `training_metrics.csv` — per-episode metrics
+Outputs:
 
-### Plot training curves
+- `dqn_model.pth`
+- `dqn_checkpoint.pth`
+- `training_metrics.csv`
 
-```shell script
+Useful tuning examples:
+
+```bash
+# longer training
+python traffic_dqn.py --episodes 1800 --max-decisions 300 --epsilon-decay 450000
+
+# larger model
+python traffic_dqn.py --episodes 1200 --max-decisions 300 --hidden-dim 128 --epsilon-decay 360000
+```
+
+### 2) Plot
+
+```bash
 python plot_training.py
 ```
 
-This reads `training_metrics.csv` and saves `training_curves.png`.
+Output:
 
-### Evaluate different policies
+- `training_curves.png`
 
-```shell script
+### 3) Evaluate
+
+```bash
 python evaluate.py
 ```
 
-This loads the trained model from `dqn_model.pth` and compares it against the baselines.  
-You must train first before evaluating.
+Compares:
 
+- Fixed-Time (Keep)
+- Fixed-Time (Demand-Aware)
+- Fixed-Time (Tuned-Static via searching static actions `0/1/2`)
+- Fixed-Time (Static a=0/1/2)
+- Random
+- Queue-Based
+- DQN
 
----
+You can force evaluation on custom env params or specific model file:
 
-## Current Scope
+```bash
+python evaluate.py --model-path dqn_checkpoint.pth --n-episodes 100
+python evaluate.py --model-path dqn_model.pth --hidden-dim 128 --ignore-checkpoint-env
+```
 
-This project is a **DQN traffic signal control framework** with:
+### 4) Run Ablations
 
-- a working Gymnasium environment
-- a complete DQN training pipeline with model persistence
-- training metrics logging and visualization
-- comparison against simple baselines (fixed-time, random)
+```bash
+# run all 3 groups across 3 seeds
+python run_ablations.py --group all --seeds 42,43,44 --eval-episodes 50
 
-Possible future improvements include:
+# run only model-size ablation
+python run_ablations.py --group model_size --seeds 42,43,44
+```
 
-- reward design (e.g. squared delay for fairness)
-- richer state features
-- better network architecture
-- hyperparameter tuning
-- more stable training methods
+`results/ablations/summary.csv` includes:
 
----
+- DQN mean reward/wait
+- Fixed-Time Keep / Demand-Aware / Tuned-Static means
+- `reward_gain_vs_keep`, `reward_gain_vs_demand`, `reward_gain_vs_tuned`
+- `wait_reduction_vs_keep`, `wait_reduction_vs_demand`, `wait_reduction_vs_tuned`
+- `avg_tuned_action` (mean best static action index over seeds)
 
+How to interpret `summary.csv`:
+
+- prioritize `reward_gain_vs_tuned`:
+  - `> 0`: DQN outperforms the strongest static fixed-time baseline
+  - `< 0`: tuned fixed-time is better than DQN in that setting
+- prioritize `wait_reduction_vs_tuned`:
+  - `> 0`: DQN reduces average waiting time vs tuned fixed-time
+  - `< 0`: DQN increases average waiting time vs tuned fixed-time
+- use `*_vs_keep` and `*_vs_demand` as secondary context; the tuned static baseline is the main fairness check
+
+## Notes
+
+- This is still a **single-intersection** study environment (not multi-agent/multi-junction).
+- The control structure is intentionally aligned with fixed-cycle timing-adjustment methods so it can be migrated to SUMO later with minimal redesign.
