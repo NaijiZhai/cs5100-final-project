@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 
@@ -72,27 +73,37 @@ def build_env_kwargs_from_args(args):
     }
 
 
-def evaluate_policy(policy, env, n_episodes=50, seed_offset=0):
+def evaluate_policy(policy, env, n_episodes=50, seed_offset=0, track_queue=False):
     results = []
+    queue_traces = []
 
     for episode in range(n_episodes):
         obs, info = env.reset(seed=seed_offset + episode)
         policy.reset()
 
+        step_queues = []
         done = False
+        step = 0
         while not done:
             action = policy.act(obs)
             obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
+            if track_queue:
+                step_queues.append(info.get("total_queue", 0))
+            step += 1
 
         results.append(info["episode"])
+        if track_queue:
+            queue_traces.append(step_queues)
 
     summary = {
         "avg_episode_reward": float(np.mean([r["episode_reward"] for r in results])),
         "std_episode_reward": float(np.std([r["episode_reward"] for r in results])),
         "avg_reward_per_step": float(np.mean([r["average_reward"] for r in results])),
         "avg_queue": float(np.mean([r["average_queue"] for r in results])),
+        "std_queue": float(np.std([r["average_queue"] for r in results])),
         "avg_wait": float(np.mean([r["average_wait"] for r in results])),
+        "std_wait": float(np.std([r["average_wait"] for r in results])),
         "avg_imbalance": float(np.mean([r["average_imbalance"] for r in results])),
         "avg_cumulative_queue": float(np.mean([r["cumulative_queue"] for r in results])),
         "avg_cumulative_wait": float(np.mean([r["cumulative_wait"] for r in results])),
@@ -103,7 +114,7 @@ def evaluate_policy(policy, env, n_episodes=50, seed_offset=0):
         "avg_final_wait": float(np.mean([r["final_total_wait"] for r in results])),
     }
 
-    return summary, results
+    return summary, results, queue_traces
 
 
 def evaluate_static_actions(env, n_episodes=50, seed_offset=0, candidate_actions=(0, 1, 2)):
@@ -114,7 +125,7 @@ def evaluate_static_actions(env, n_episodes=50, seed_offset=0, candidate_actions
 
     for action in candidate_actions:
         policy = StaticActionPolicy(action=action)
-        summary, _ = evaluate_policy(policy, env, n_episodes=n_episodes, seed_offset=seed_offset)
+        summary, _, _ = evaluate_policy(policy, env, n_episodes=n_episodes, seed_offset=seed_offset)
         action_summaries[action] = summary
 
         if summary["avg_episode_reward"] > best_reward:
@@ -193,22 +204,24 @@ def evaluate_all_policies(env, agent, n_episodes=50, seed_offset=0):
     random_policy = RandomPolicy(env.action_space)
     queue_policy = QueueBasedPolicy(deadband=0.05)
 
-    fixed_keep_result, _ = evaluate_policy(fixed_keep_policy, env, n_episodes=n_episodes, seed_offset=seed_offset)
-    fixed_demand_result, _ = evaluate_policy(
-        fixed_demand_policy,
-        env,
-        n_episodes=n_episodes,
-        seed_offset=seed_offset,
+    fixed_keep_result, fixed_keep_raw, fixed_keep_queues = evaluate_policy(
+        fixed_keep_policy, env, n_episodes=n_episodes, seed_offset=seed_offset, track_queue=True,
+    )
+    fixed_demand_result, fixed_demand_raw, _ = evaluate_policy(
+        fixed_demand_policy, env, n_episodes=n_episodes, seed_offset=seed_offset,
     )
     tuned_action, tuned_result, static_summaries = evaluate_static_actions(
-        env,
-        n_episodes=n_episodes,
-        seed_offset=seed_offset,
-        candidate_actions=(0, 1, 2),
+        env, n_episodes=n_episodes, seed_offset=seed_offset, candidate_actions=(0, 1, 2),
     )
-    random_result, _ = evaluate_policy(random_policy, env, n_episodes=n_episodes, seed_offset=seed_offset)
-    queue_result, _ = evaluate_policy(queue_policy, env, n_episodes=n_episodes, seed_offset=seed_offset)
-    dqn_result, _ = evaluate_policy(dqn_policy, env, n_episodes=n_episodes, seed_offset=seed_offset)
+    random_result, random_raw, _ = evaluate_policy(
+        random_policy, env, n_episodes=n_episodes, seed_offset=seed_offset,
+    )
+    queue_result, queue_raw, _ = evaluate_policy(
+        queue_policy, env, n_episodes=n_episodes, seed_offset=seed_offset,
+    )
+    dqn_result, dqn_raw, dqn_queues = evaluate_policy(
+        dqn_policy, env, n_episodes=n_episodes, seed_offset=seed_offset, track_queue=True,
+    )
 
     fixed_demand_result = dict(fixed_demand_result)
     fixed_demand_result["selected_action"] = fixed_demand_policy.action
@@ -216,7 +229,7 @@ def evaluate_all_policies(env, agent, n_episodes=50, seed_offset=0):
     tuned_result = dict(tuned_result)
     tuned_result["selected_action"] = tuned_action
 
-    return {
+    summaries = {
         "Fixed-Time (Keep)": fixed_keep_result,
         "Fixed-Time (Demand-Aware)": fixed_demand_result,
         "Fixed-Time (Tuned-Static)": tuned_result,
@@ -227,6 +240,70 @@ def evaluate_all_policies(env, agent, n_episodes=50, seed_offset=0):
         "Queue-Based Policy": queue_result,
         "DQN Policy": dqn_result,
     }
+
+    raw_results = {
+        "Fixed-Time (Keep)": fixed_keep_raw,
+        "Fixed-Time (Demand-Aware)": fixed_demand_raw,
+        "Random Policy": random_raw,
+        "Queue-Based Policy": queue_raw,
+        "DQN Policy": dqn_raw,
+    }
+
+    queue_evolution = {
+        "Fixed-Time (Keep)": fixed_keep_queues,
+        "DQN Policy": dqn_queues,
+    }
+
+    return summaries, raw_results, queue_evolution
+
+
+def save_summary_csv(summaries, path="eval_summary.csv"):
+    rows = []
+    for name, s in summaries.items():
+        rows.append({
+            "policy": name,
+            "avg_reward": f"{s['avg_episode_reward']:.2f}",
+            "std_reward": f"{s['std_episode_reward']:.2f}",
+            "avg_wait": f"{s['avg_wait']:.4f}",
+            "std_wait": f"{s.get('std_wait', 0):.4f}",
+            "avg_queue": f"{s['avg_queue']:.4f}",
+            "std_queue": f"{s.get('std_queue', 0):.4f}",
+            "avg_departed": f"{s['avg_departed']:.1f}",
+            "avg_switch_count": f"{s['avg_switch_count']:.1f}",
+        })
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Saved summary to {path}")
+
+
+def save_raw_csv(raw_results, seed_offset, path="eval_raw.csv"):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["policy", "episode", "seed", "reward", "avg_wait", "avg_queue", "departed", "switches"])
+        for name, episodes in raw_results.items():
+            for i, ep in enumerate(episodes):
+                writer.writerow([
+                    name, i, seed_offset + i,
+                    f"{ep['episode_reward']:.2f}",
+                    f"{ep['average_wait']:.4f}",
+                    f"{ep['average_queue']:.4f}",
+                    ep["total_departed"],
+                    ep["switch_count"],
+                ])
+    print(f"Saved raw results to {path}")
+
+
+def save_queue_evolution_csv(queue_evolution, path="eval_queue_evolution.csv"):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["policy", "episode", "step", "queue_length"])
+        for name, traces in queue_evolution.items():
+            for ep_idx, trace in enumerate(traces):
+                for step, q in enumerate(trace):
+                    writer.writerow([name, ep_idx, step, q])
+    print(f"Saved queue evolution to {path}")
 
 
 def main(cli_args=None):
@@ -247,7 +324,7 @@ def main(cli_args=None):
         fallback_hidden_dim=args.hidden_dim,
     )
 
-    results = evaluate_all_policies(
+    summaries, raw_results, queue_evolution = evaluate_all_policies(
         env,
         agent,
         n_episodes=args.n_episodes,
@@ -257,15 +334,19 @@ def main(cli_args=None):
     print(f"Model: {model_path}")
     print(f"Env kwargs: {env_kwargs}")
     print(f"Agent kwargs: {agent_meta}")
-    for name, summary in results.items():
+    for name, summary in summaries.items():
         print(f"{name}: {summary}")
+
+    save_summary_csv(summaries)
+    save_raw_csv(raw_results, args.seed_offset)
+    save_queue_evolution_csv(queue_evolution)
 
     if args.output_json:
         payload = {
             "model_path": model_path,
             "env_kwargs": env_kwargs,
             "agent_kwargs": agent_meta,
-            "results": results,
+            "results": summaries,
         }
         with open(args.output_json, "w") as f:
             json.dump(payload, f, indent=2)

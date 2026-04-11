@@ -161,7 +161,7 @@ def run_single_experiment(group, exp_name, seed, overrides, output_root, eval_ep
         ignore_checkpoint_env=False,
         fallback_hidden_dim=args.hidden_dim,
     )
-    eval_results = evaluate_all_policies(
+    eval_results, _, _ = evaluate_all_policies(
         env,
         agent,
         n_episodes=eval_episodes,

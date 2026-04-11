@@ -63,6 +63,12 @@ Runs policy comparison over multiple episodes and reports averages:
 - switch count (`avg_switch_count`)
 - final queue / final wait (`avg_final_queue`, `avg_final_wait`)
 
+Saves results to CSV:
+
+- `eval_summary.csv` — aggregated metrics per policy
+- `eval_raw.csv` — per-episode raw values per policy and seed
+- `eval_queue_evolution.csv` — queue length per decision step (DQN and Fixed-Time)
+
 Also supports loading either:
 
 - plain `state_dict` (`dqn_model.pth`)
@@ -79,16 +85,14 @@ Outputs are saved under `results/ablations/...` with per-run `evaluation.json` a
 The summary reports gains against multiple fixed-time baselines, including tuned static fixed-time (`reward_gain_vs_tuned`, `wait_reduction_vs_tuned`).
 
 ### `plot_training.py`
-Plots training curves from `training_metrics.csv`.
+Plots detailed 6-panel training diagnostics from `training_metrics.csv` (reward, epsilon, queue, wait, imbalance, throughput).
 
-Current default plots include:
+### `plot_results.py`
+Generates publication-ready result plots:
 
-- episode reward
-- epsilon
-- average queue
-- average wait
-- average imbalance
-- throughput rate (`avg_departed_per_sec`, fallback to `total_departed`)
+- training curves (reward and wait vs episode)
+- bar chart comparison across all policies
+- queue evolution over time (DQN vs Fixed-Time with mean ± std)
 
 ## Environment Interface
 
@@ -146,6 +150,19 @@ Note:
 
 ## How to Run
 
+### 0) Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+For CPU-only PyTorch (lighter install):
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+```
+
 ### 1) Train
 
 ```bash
@@ -168,17 +185,7 @@ python traffic_dqn.py --episodes 1800 --max-decisions 300 --epsilon-decay 450000
 python traffic_dqn.py --episodes 1200 --max-decisions 300 --hidden-dim 128 --epsilon-decay 360000
 ```
 
-### 2) Plot
-
-```bash
-python plot_training.py
-```
-
-Output:
-
-- `training_curves.png`
-
-### 3) Evaluate
+### 2) Evaluate
 
 ```bash
 python evaluate.py
@@ -194,12 +201,32 @@ Compares:
 - Queue-Based
 - DQN
 
+Outputs:
+
+- `eval_summary.csv` — avg reward, std, avg wait, avg queue per policy
+- `eval_raw.csv` — per-episode raw values for each policy and seed
+- `eval_queue_evolution.csv` — queue length per decision step (DQN and Fixed-Time)
+
 You can force evaluation on custom env params or specific model file:
 
 ```bash
 python evaluate.py --model-path dqn_checkpoint.pth --n-episodes 100
 python evaluate.py --model-path dqn_model.pth --hidden-dim 128 --ignore-checkpoint-env
 ```
+
+### 3) Plot results
+
+```bash
+python plot_results.py
+```
+
+Generates:
+
+- `training_curves.png` — reward and wait vs episode during training
+- `policy_comparison.png` — bar charts comparing all policies
+- `queue_evolution.png` — DQN vs Fixed-Time queue over decision steps
+
+The older `plot_training.py` is still available for detailed 6-panel training diagnostics.
 
 ### 4) Run Ablations
 
