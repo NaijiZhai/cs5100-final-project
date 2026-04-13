@@ -5,6 +5,7 @@ import os
 
 import numpy as np
 import torch
+import pprint
 
 from agent import Agent
 from baseline import (
@@ -17,6 +18,8 @@ from baseline import (
 )
 from traffic_signal_env import TrafficSignalEnv
 
+def compute_ci(std, n, z=1.96):
+    return z * (std / np.sqrt(n))
 
 def parse_arrival_prob(text):
     parts = [p.strip() for p in text.split(",") if p.strip()]
@@ -96,14 +99,38 @@ def evaluate_policy(policy, env, n_episodes=50, seed_offset=0, track_queue=False
         if track_queue:
             queue_traces.append(step_queues)
 
+    n = len(results)
+
+    reward_vals = [r["episode_reward"] for r in results]
+    queue_vals = [r["average_queue"] for r in results]
+    wait_vals = [r["average_wait"] for r in results]
+
+    reward_mean = np.mean(reward_vals)
+    reward_std = np.std(reward_vals)
+    reward_ci = compute_ci(reward_std, n)
+
+    queue_mean = np.mean(queue_vals)
+    queue_std = np.std(queue_vals)
+    queue_ci = compute_ci(queue_std, n)
+
+    wait_mean = np.mean(wait_vals)
+    wait_std = np.std(wait_vals)
+    wait_ci = compute_ci(wait_std, n)
+
     summary = {
-        "avg_episode_reward": float(np.mean([r["episode_reward"] for r in results])),
-        "std_episode_reward": float(np.std([r["episode_reward"] for r in results])),
+        "avg_episode_reward": float(reward_mean),
+        "std_episode_reward": float(reward_std),
+        "ci_episode_reward": float(reward_ci),
+
+        "avg_queue": float(queue_mean),
+        "std_queue": float(queue_std),
+        "ci_queue": float(queue_ci),
+
+        "avg_wait": float(wait_mean),
+        "std_wait": float(wait_std),
+        "ci_wait": float(wait_ci),
+
         "avg_reward_per_step": float(np.mean([r["average_reward"] for r in results])),
-        "avg_queue": float(np.mean([r["average_queue"] for r in results])),
-        "std_queue": float(np.std([r["average_queue"] for r in results])),
-        "avg_wait": float(np.mean([r["average_wait"] for r in results])),
-        "std_wait": float(np.std([r["average_wait"] for r in results])),
         "avg_imbalance": float(np.mean([r["average_imbalance"] for r in results])),
         "avg_cumulative_queue": float(np.mean([r["cumulative_queue"] for r in results])),
         "avg_cumulative_wait": float(np.mean([r["cumulative_wait"] for r in results])),
@@ -332,10 +359,18 @@ def main(cli_args=None):
     )
 
     print(f"Model: {model_path}")
-    print(f"Env kwargs: {env_kwargs}")
-    print(f"Agent kwargs: {agent_meta}")
+    pp = pprint.PrettyPrinter(indent=4, width=120)
+
+    print("\nEnv kwargs:")
+    pp.pprint(env_kwargs)
+
+    print("\nAgent kwargs:")
+    pp.pprint(agent_meta)
+    pp = pprint.PrettyPrinter(indent=4, width=120)
+
     for name, summary in summaries.items():
-        print(f"{name}: {summary}")
+      print(f"\n{name}:")
+      pp.pprint(summary)
 
     save_summary_csv(summaries)
     save_raw_csv(raw_results, args.seed_offset)
