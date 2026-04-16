@@ -12,6 +12,11 @@ import numpy as np
 
 
 def load_csv(path):
+    """Load a CSV file into a list of ``OrderedDict`` rows via ``DictReader``.
+
+    This is a thin generic helper — all type conversion is left to the
+    caller since different CSVs have different column types.
+    """
     with open(path, "r") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
@@ -19,8 +24,16 @@ def load_csv(path):
 
 
 def smooth(values, window=20):
+    """Compute a moving average and return aligned x-indices.
+
+    Returns ``(x, smoothed)`` where *x* starts at ``window - 1`` so the
+    smoothed curve lines up with the correct episode numbers on the
+    x-axis.  Falls back to the identity when the array is shorter than
+    *window*.
+    """
     if len(values) < window:
         return np.arange(len(values)), values
+    # Uniform kernel — each output point is the mean of `window` neighbours
     kernel = np.ones(window) / window
     smoothed = np.convolve(values, kernel, mode="valid")
     x = np.arange(window - 1, len(values))
@@ -28,6 +41,11 @@ def smooth(values, window=20):
 
 
 def plot_training_curves(metrics_path="training_metrics.csv"):
+    """Generate a 2-panel figure: reward vs episode and wait vs episode.
+
+    Each panel shows the raw per-episode values at low opacity with a
+    bold 20-episode moving-average overlay to highlight the trend.
+    """
     rows = load_csv(metrics_path)
     episodes = np.array([float(r["episode"]) for r in rows])
     rewards = np.array([float(r["episode_reward"]) for r in rows])
@@ -62,6 +80,12 @@ def plot_training_curves(metrics_path="training_metrics.csv"):
 
 
 def plot_bar_comparison(summary_path="eval_summary.csv"):
+    """Generate a side-by-side bar chart comparing all evaluated policies.
+
+    Left panel: average episode reward.  Right panel: average wait time.
+    DQN bars are highlighted in colour; all other policies use grey so
+    the learned policy stands out visually.
+    """
     rows = load_csv(summary_path)
     policies = [r["policy"] for r in rows]
     avg_rewards = [float(r["avg_reward"]) for r in rows]
@@ -94,8 +118,17 @@ def plot_bar_comparison(summary_path="eval_summary.csv"):
 
 
 def plot_queue_evolution(queue_path="eval_queue_evolution.csv"):
+    """Plot mean ± std shaded-area queue evolution across episodes.
+
+    For each policy, all per-episode queue traces are zero-padded to the
+    same length, then the mean and standard deviation are computed at
+    every decision step.  The mean is drawn as a solid line and the
+    ±1 std band is shown as a translucent fill, giving a clear picture
+    of both the central tendency and the variability.
+    """
     rows = load_csv(queue_path)
 
+    # Group rows by policy → episode → list of queue values
     by_policy = defaultdict(lambda: defaultdict(list))
     for r in rows:
         by_policy[r["policy"]][int(r["episode"])].append(float(r["queue_length"]))
@@ -106,6 +139,7 @@ def plot_queue_evolution(queue_path="eval_queue_evolution.csv"):
     for policy_name, episodes in by_policy.items():
         all_traces = list(episodes.values())
         max_len = max(len(t) for t in all_traces)
+        # Pad shorter traces with NaN so nanmean/nanstd ignore missing tails
         padded = np.full((len(all_traces), max_len), np.nan)
         for i, trace in enumerate(all_traces):
             padded[i, :len(trace)] = trace

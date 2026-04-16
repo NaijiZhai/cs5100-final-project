@@ -1,3 +1,14 @@
+"""
+Evaluation script comparing DQN against baseline policies.
+
+Loads a trained DQN checkpoint, reconstructs the environment and agent,
+then runs every registered policy (fixed-time variants, random,
+queue-based, and DQN) for N episodes.  Produces three CSV files:
+  * eval_summary.csv   — per-policy aggregate statistics
+  * eval_raw.csv       — per-episode results for each policy
+  * eval_queue_evolution.csv — step-level queue traces (DQN & Fixed-Time)
+"""
+
 import argparse
 import csv
 import json
@@ -19,9 +30,18 @@ from baseline import (
 from traffic_signal_env import TrafficSignalEnv
 
 def compute_ci(std, n, z=1.96):
+    """Compute the 95 % confidence interval half-width.
+
+    Uses the normal approximation: CI = z * (std / sqrt(n)), where the
+    default *z* = 1.96 corresponds to the 95 % confidence level.
+    """
     return z * (std / np.sqrt(n))
 
 def parse_arrival_prob(text):
+    """Parse a comma-separated string of 4 arrival probabilities from the CLI.
+
+    Validates that exactly 4 values are provided and each lies in [0, 1].
+    """
     parts = [p.strip() for p in text.split(",") if p.strip()]
     if len(parts) != 4:
         raise argparse.ArgumentTypeError("arrival_prob must contain 4 comma-separated values")
@@ -33,15 +53,23 @@ def parse_arrival_prob(text):
 
 
 def build_parser():
+    """Build the CLI argument parser for evaluation.
+
+    Arguments cover model loading, episode count, environment overrides,
+    and optional JSON output.
+    """
     parser = argparse.ArgumentParser(description="Evaluate fixed/random/queue/DQN policies")
 
+    # --- Model loading ---
     parser.add_argument("--model-path", type=str, default="", help="Checkpoint path (.pth)")
     parser.add_argument("--n-episodes", type=int, default=50)
     parser.add_argument("--seed-offset", type=int, default=0)
 
+    # --- Agent architecture (used only when loading a plain state_dict) ---
     parser.add_argument("--hidden-dim", type=int, default=64, help="Used only for plain state_dict models")
     parser.add_argument("--ignore-checkpoint-env", action="store_true")
 
+    # --- Environment overrides ---
     parser.add_argument("--max-decisions", type=int, default=300)
     parser.add_argument("--max-steps", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
@@ -57,12 +85,18 @@ def build_parser():
     parser.add_argument("--green-delta", type=int, default=2)
     parser.add_argument("--min-green", type=int, default=6)
 
+    # --- Output ---
     parser.add_argument("--output-json", type=str, default="")
 
     return parser
 
 
 def build_env_kwargs_from_args(args):
+    """Extract environment-related CLI arguments into a dict for ``TrafficSignalEnv``.
+
+    Handles the legacy ``--max-steps`` alias by falling back to
+    ``--max-decisions`` when ``--max-steps`` is not provided.
+    """
     max_decisions = args.max_decisions if args.max_steps is None else args.max_steps
     return {
         "max_decisions": max_decisions,
@@ -77,6 +111,19 @@ def build_env_kwargs_from_args(args):
 
 
 def evaluate_policy(policy, env, n_episodes=50, seed_offset=0, track_queue=False):
+    """Run *policy* for *n_episodes* and collect summary statistics.
+
+    Each episode uses a deterministic seed (``seed_offset + episode``) so
+    results are reproducible.  When *track_queue* is ``True``, the
+    per-step total queue length is recorded for later queue-evolution
+    plots.
+
+    Returns:
+        summary: dict of aggregate metrics (means, stds, 95 % CIs).
+        results: list of per-episode info dicts from the environment.
+        queue_traces: list of per-episode queue-length lists (empty if
+            *track_queue* is ``False``).
+    """
     results = []
     queue_traces = []
 
@@ -101,6 +148,7 @@ def evaluate_policy(policy, env, n_episodes=50, seed_offset=0, track_queue=False
 
     n = len(results)
 
+    # --- Compute mean, std, and 95 % CI for the three key metrics ---
     reward_vals = [r["episode_reward"] for r in results]
     queue_vals = [r["average_queue"] for r in results]
     wait_vals = [r["average_wait"] for r in results]
@@ -130,6 +178,7 @@ def evaluate_policy(policy, env, n_episodes=50, seed_offset=0, track_queue=False
         "std_wait": float(wait_std),
         "ci_wait": float(wait_ci),
 
+        # Additional per-episode averages for detailed analysis
         "avg_reward_per_step": float(np.mean([r["average_reward"] for r in results])),
         "avg_imbalance": float(np.mean([r["average_imbalance"] for r in results])),
         "avg_cumulative_queue": float(np.mean([r["cumulative_queue"] for r in results])),
@@ -145,6 +194,12 @@ def evaluate_policy(policy, env, n_episodes=50, seed_offset=0, track_queue=False
 
 
 def evaluate_static_actions(env, n_episodes=50, seed_offset=0, candidate_actions=(0, 1, 2)):
+    """Brute-force search over static (constant) actions.
+
+    Evaluates each candidate action independently and returns the one
+    that achieves the highest average episode reward.  This provides a
+    simple upper bound on what a fixed policy can achieve.
+    """
     action_summaries = {}
     best_action = None
     best_summary = None
@@ -164,6 +219,14 @@ def evaluate_static_actions(env, n_episodes=50, seed_offset=0, candidate_actions
 
 
 def auto_model_path(requested_path):
+    """Resolve the model file to load.
+
+    Priority order:
+    1. Explicit path provided by the user via ``--model-path``.
+    2. ``dqn_checkpoint.pth`` (full checkpoint with metadata).
+    3. ``dqn_model.pth`` (plain state_dict, no metadata).
+    4. Empty string — caller should abort.
+    """
     if requested_path:
         return requested_path
 
@@ -175,6 +238,12 @@ def auto_model_path(requested_path):
 
 
 def safe_torch_load(path):
+    """Load a PyTorch file with backward-compatible ``weights_only`` handling.
+
+    Newer PyTorch versions require ``weights_only=True`` by default; older
+    versions do not accept the keyword at all.  This wrapper tries the
+    modern call first and falls back to the legacy signature.
+    """
     try:
         return torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:
@@ -182,11 +251,25 @@ def safe_torch_load(path):
 
 
 def load_agent_and_env(model_path, override_env_kwargs=None, ignore_checkpoint_env=False, fallback_hidden_dim=64):
+    """Reconstruct the DQN agent and environment from a saved model file.
+
+    Supports two file formats:
+    * **Full checkpoint** (dict with ``"state_dict"`` key) — env and agent
+      kwargs are read from the checkpoint so the evaluation environment
+      matches training exactly.
+    * **Plain state_dict** — only network weights are available; the
+      caller must supply ``override_env_kwargs`` and the agent uses
+      ``fallback_hidden_dim``.
+
+    When ``ignore_checkpoint_env`` is ``True``, the checkpoint's stored
+    env kwargs are discarded in favour of the CLI overrides.
+    """
     loaded = safe_torch_load(model_path)
 
     checkpoint_env_kwargs = None
     checkpoint_agent_kwargs = {}
 
+    # Detect whether the file is a full checkpoint or a bare state_dict
     if isinstance(loaded, dict) and "state_dict" in loaded:
         state_dict = loaded["state_dict"]
         checkpoint_env_kwargs = loaded.get("env_kwargs")
@@ -194,6 +277,7 @@ def load_agent_and_env(model_path, override_env_kwargs=None, ignore_checkpoint_e
     else:
         state_dict = loaded
 
+    # Prefer checkpoint env kwargs unless the user explicitly overrides
     env_kwargs = override_env_kwargs
     if checkpoint_env_kwargs and not ignore_checkpoint_env:
         env_kwargs = checkpoint_env_kwargs
@@ -203,6 +287,7 @@ def load_agent_and_env(model_path, override_env_kwargs=None, ignore_checkpoint_e
 
     env = TrafficSignalEnv(**env_kwargs)
 
+    # Reconstruct the agent with the same architecture used during training
     hidden_dim = int(checkpoint_agent_kwargs.get("hidden_dim", fallback_hidden_dim))
     gamma = float(checkpoint_agent_kwargs.get("gamma", 0.99))
     learning_rate = float(checkpoint_agent_kwargs.get("learning_rate", 1e-3))
@@ -214,6 +299,7 @@ def load_agent_and_env(model_path, override_env_kwargs=None, ignore_checkpoint_e
         gamma=gamma,
         learning_rate=learning_rate,
     )
+    # Load trained weights and switch to eval mode (disables dropout, etc.)
     agent.online_network.load_state_dict(state_dict)
     agent.online_network.eval()
 
@@ -225,6 +311,20 @@ def load_agent_and_env(model_path, override_env_kwargs=None, ignore_checkpoint_e
 
 
 def evaluate_all_policies(env, agent, n_episodes=50, seed_offset=0):
+    """Evaluate every registered policy and return structured results.
+
+    Policies evaluated:
+    * Fixed-Time (Keep) — always action 1 (keep current phase)
+    * Fixed-Time (Demand-Aware) — picks action from arrival probabilities
+    * Fixed-Time (Tuned-Static) — best constant action found by brute-force
+    * Fixed-Time (Static a=0/1/2) — each constant action individually
+    * Random Policy — uniform random action each step
+    * Queue-Based Policy — switches when queue imbalance exceeds a deadband
+    * DQN Policy — the trained agent
+
+    Queue traces are recorded only for DQN and Fixed-Time (Keep) to keep
+    the output manageable while still enabling a head-to-head comparison.
+    """
     dqn_policy = DQNPolicy(agent)
     fixed_keep_policy = FixedTimePolicy(action=1)
     fixed_demand_policy = DemandAwareFixedTimePolicy(arrival_prob=env.arrival_prob)
@@ -285,6 +385,11 @@ def evaluate_all_policies(env, agent, n_episodes=50, seed_offset=0):
 
 
 def save_summary_csv(summaries, path="eval_summary.csv"):
+    """Write one row per policy with aggregate metrics.
+
+    Columns: policy name, avg/std reward, avg/std wait, avg/std queue,
+    avg departed vehicles, and avg phase-switch count.
+    """
     rows = []
     for name, s in summaries.items():
         rows.append({
@@ -306,6 +411,11 @@ def save_summary_csv(summaries, path="eval_summary.csv"):
 
 
 def save_raw_csv(raw_results, seed_offset, path="eval_raw.csv"):
+    """Write one row per (policy, episode) with individual episode metrics.
+
+    Includes the seed used for each episode so results can be reproduced
+    or cross-referenced with the environment's random traffic patterns.
+    """
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["policy", "episode", "seed", "reward", "avg_wait", "avg_queue", "departed", "switches"])
@@ -323,6 +433,11 @@ def save_raw_csv(raw_results, seed_offset, path="eval_raw.csv"):
 
 
 def save_queue_evolution_csv(queue_evolution, path="eval_queue_evolution.csv"):
+    """Write one row per (policy, episode, step) with the queue length.
+
+    This long-format CSV is consumed by ``plot_results.py`` to draw
+    mean ± std shaded-area queue-evolution plots.
+    """
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["policy", "episode", "step", "queue_length"])
@@ -334,6 +449,16 @@ def save_queue_evolution_csv(queue_evolution, path="eval_queue_evolution.csv"):
 
 
 def main(cli_args=None):
+    """Full evaluation pipeline: load model → run all policies → save CSVs.
+
+    Steps:
+    1. Parse CLI arguments and resolve the model file path.
+    2. Reconstruct the agent and environment from the checkpoint.
+    3. Evaluate every policy for ``n_episodes`` episodes.
+    4. Pretty-print results to stdout.
+    5. Save summary, raw, and queue-evolution CSV files.
+    6. Optionally dump everything to a JSON file.
+    """
     parser = build_parser()
     args = parser.parse_args(cli_args)
 
