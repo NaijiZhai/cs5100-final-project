@@ -1,3 +1,15 @@
+"""
+Detailed 6-panel training diagnostics for the DQN traffic signal agent.
+
+Reads ``training_metrics.csv`` and produces a 2×3 grid of subplots:
+  1. Episode Reward (raw + smoothed)
+  2. Exploration Rate (epsilon over episodes)
+  3. Average Queue (raw + smoothed)
+  4. Average Wait (raw + smoothed)
+  5. Average Imbalance (raw + smoothed, with fallback)
+  6. Throughput — departed vehicles per second (raw + smoothed, with fallback)
+"""
+
 import csv
 
 import matplotlib.pyplot as plt
@@ -5,6 +17,11 @@ import numpy as np
 
 
 def load_metrics(path="training_metrics.csv"):
+    """Load the training CSV into a dict of NumPy arrays keyed by column name.
+
+    Each column is read as a list of floats and then converted to a
+    ``np.ndarray`` for convenient vectorised operations downstream.
+    """
     data = {}
     with open(path, "r") as f:
         reader = csv.DictReader(f)
@@ -17,16 +34,32 @@ def load_metrics(path="training_metrics.csv"):
 
 
 def smooth(values, window=20):
+    """Compute a centred moving average using 1-D convolution.
+
+    Returns the original *values* unchanged when the array is shorter
+    than *window*.  The ``mode="valid"`` convolution produces an output
+    that is ``len(values) - window + 1`` elements long, effectively
+    trimming the noisy edges.
+    """
     if len(values) < window:
         return values
+    # Uniform kernel — each output point is the mean of `window` neighbours
     kernel = np.ones(window) / window
     return np.convolve(values, kernel, mode="valid")
 
 
 def plot_with_smoothing(ax, episodes, values, ylabel, title, window=20):
+    """Plot raw data as a faint line overlaid with a bold smoothed curve.
+
+    The raw series is drawn at low opacity so the underlying noise is
+    visible, while the smoothed line highlights the trend.  The x-axis
+    of the smoothed curve is aligned to the corresponding episode
+    indices (offset by ``window - 1``).
+    """
     ax.plot(episodes, values, alpha=0.3, label="Raw")
     smoothed = smooth(values, window=window)
 
+    # Align the shorter smoothed array to the correct episode indices
     if len(values) >= window:
         smoothed_x = episodes[window - 1 :]
     else:
@@ -41,6 +74,13 @@ def plot_with_smoothing(ax, episodes, values, ylabel, title, window=20):
 
 
 def get_metric(metrics, key, fallback_key=None, default_value=None):
+    """Retrieve a metric array, falling back gracefully for older CSVs.
+
+    Training CSV columns have evolved over time.  This helper tries
+    *key* first, then *fallback_key*, and finally fills a constant
+    array with *default_value*.  Returns a ``(values, used_key)`` tuple
+    so callers can label plots with the actual data source.
+    """
     if key in metrics:
         return metrics[key], key
     if fallback_key and fallback_key in metrics:
@@ -51,6 +91,16 @@ def get_metric(metrics, key, fallback_key=None, default_value=None):
 
 
 def plot_curves(metrics):
+    """Render the 6-panel training diagnostics figure.
+
+    Layout (2 rows × 3 columns):
+      [0,0] Episode Reward   — tracks learning progress
+      [0,1] Exploration Rate  — epsilon decay schedule
+      [0,2] Average Queue     — queue-length trend
+      [1,0] Average Wait      — waiting-time trend
+      [1,1] Average Imbalance — queue imbalance across approaches
+      [1,2] Throughput        — vehicles departed per second
+    """
     episodes = metrics["episode"]
 
     fig, axes = plt.subplots(2, 3, figsize=(15, 8))
